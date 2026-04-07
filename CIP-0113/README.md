@@ -85,7 +85,7 @@ These components are token-specific and define the custom behavior of each progr
 - `transferLogicScript`: A token-specific Withdraw-0 script that implements the custom transfer logic for user-initiated transfers. This script validates whether a transfer is allowed based on the token's rules (e.g., allowlist checks, transfer limits, compliance rules).
 - `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties could be any Cardano user or specific groups (e.g., admins). This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
 - `issuanceLogicScript`: A token-specific Withdraw-0 script that implements the custom minting/burning logic for the programmable token. It defines who can mint new tokens, under what conditions, and the burning rules.
-- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by the hash of the token's specific issuanceLogicScript.
+- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by: (1) the `programmableLogicBase` credential, (2) the `registryMintingPolicy` policy ID, and (3) the credential of the token's specific `issuanceLogicScript`. The first two are shared infrastructure parameters, while the third varies per token.
 - `globalState`: An optional token-specific unique UTxO whose datum contains global information regarding the token (e.g., if it's frozen, if transfers are paused, total supply, etc.). Not all tokens require a global state.
 - `globalStateUnit`: The unit (policy + token name) of the NFT contained in the globalState UTxO. This NFT uniquely identifies the global state for a specific programmable token.
 
@@ -105,7 +105,7 @@ The creator writes a new transferLogicScript where they define the rules to tran
 
 Then they write a new issuanceLogicScript where they define who can mint and burn the new token.
 
-Then they deploy a new issuanceMintingPolicy instance parameterized by the hash of the new issuanceLogicScript.
+Then they deploy a new issuanceMintingPolicy instance parameterized by the `programmableLogicBase` credential, the `registryMintingPolicy` policy ID, and the credential of the new issuanceLogicScript.
 
 Finally, the creator adds a RegistryNode to the registry with the hashes of all the above scripts and with additional required information. The registration cannot happen if the policy has already been registered or if the issuanceMintingPolicy is wrong.
 
@@ -211,7 +211,28 @@ and MUST include a newly minted NFT, under the `registryMintingPolicy`,
 with the programmable token policy as NFT name.
 6) Both the outputs MUST NOT have any reference script.
 7) Both the outputs address MUST **only** have payment credentials.
-8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by a custom `issuanceLogicScript`
+8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by the `programmableLogicBase` credential, the `registryMintingPolicy` policy ID, and the credential of a custom `issuanceLogicScript`
+
+#### issuanceMintingPolicy Redeemer
+
+The redeemer passed to the `issuanceMintingPolicy` follows this type:
+
+```ts
+type SmartTokenMintingAction {
+    minting_logic_cred: Credential,
+    minting_registry_proof: MintingRegistryProof
+}
+
+type MintingRegistryProof {
+    RefInput { index: Int }
+    OutputIndex { index: Int }
+}
+```
+
+- `minting_logic_cred`: The credential of the `issuanceLogicScript` that must be invoked (via withdraw-zero). Must match the credential the policy was parameterized with
+- `minting_registry_proof`: Proof that the token is registered in the registry:
+  - `OutputIndex { index }`: Used during the **first mint** (registration transaction). The registry node is being created in this transaction at the specified output index. All minted tokens MUST be sent to `programmableLogicBase` addresses
+  - `RefInput { index }`: Used for **subsequent mints**. The registry node exists as a reference input at the specified index. If `programmableLogicBase` UTxOs are also being spent in the transaction, output validation is delegated to `programmableLogicGlobal`. Otherwise, the `issuanceMintingPolicy` validates that all minted tokens go to `programmableLogicBase` addresses
 
 ### Transfer
 
