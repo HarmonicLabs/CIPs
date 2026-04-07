@@ -397,7 +397,7 @@ The programmableLogicGlobal stake validator performs the following validation:
 
 Depending on the substandard and the specific programmable token implementation, additional reference inputs MAY be required:
 
-1. **Global State**: If the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy MUST be included
+1. **Global State**: Depending on the substandard implementation, if the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy might be required. The `transferLogicScript`, `thirdPartyTransferLogicScript`, or `issuanceMintingPolicy` might enforce its inclusion. The exact requirements depend on the substandard (see "Existing substandards" section)
 2. **User State**: Depending on the substandard implementation, one or more reference inputs representing user state MAY be required. The exact requirements depend on the substandard (see "Existing substandards" section)
 
 #### Security Considerations for Transfers
