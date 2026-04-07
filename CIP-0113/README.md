@@ -298,7 +298,7 @@ This constructor supports **multiple UTxOs** in a single transaction for batch o
 
 When using this constructor:
 1. `registry_node_idx`: The index (in reference inputs) of the `RegistryNode` for the token being acted upon
-2. `outputs_start_idx`: The index where corresponding outputs begin in the transaction outputs
+2. `outputs_start_idx`: The index where corresponding outputs begin in the transaction outputs. Outputs before this index are not paired with inputs, but any programmable tokens of the seized policy found at programmableLogicBase addresses in those earlier outputs still count toward the output-side balance invariant. This allows the ThirdPartyAct to coexist in the same transaction with other actions that produce earlier PLB outputs (e.g., a concurrent TransferAct)
 
 **Input/Output Pairing**
 
