@@ -75,7 +75,14 @@ These components form the infrastructure layer shared by ALL programmable tokens
 These components form the common validation infrastructure shared by ALL programmable tokens:
 
 - `programmableLogicBase`: The unique Spend script that holds all existing programmable tokens. All programmable tokens live at addresses with this script as the payment credential. This script acts as a gatekeeper, delegating actual validation to the programmableLogicGlobal stake validator.
-- `programmableLogicGlobal`: The Stake validator that performs the actual validation logic for transfers and third-party actions. It is invoked via the withdraw-zero pattern when programmable tokens are spent from the programmableLogicBase script.
+- `programmableLogicGlobal`: The Stake validator that performs the actual validation logic for transfers and third-party actions. It is invoked via the withdraw-zero pattern when programmable tokens are spent from the programmableLogicBase script. It is parameterized by a `protocolParametersPolicy` and discovers its configuration at runtime from a reference input containing a `ProtocolParams` NFT with the following inline datum:
+    ```ts
+    type ProgrammableLogicGlobalParams {
+        registry_node_cs: PolicyId,
+        prog_logic_cred: Credential
+    }
+    ```
+    Where `registry_node_cs` is the policy ID of the `registryMintingPolicy` and `prog_logic_cred` is the credential of the `programmableLogicBase` script.
 - `smart wallet`: The set of UTxOs living inside the programmableLogicBase script that belong to a specific user. Ownership is determined by the stake credential attached to the UTxOs, not the payment credential (which is always programmableLogicBase).
 
 ### Layer 3: Substandard Components
@@ -85,7 +92,7 @@ These components are token-specific and define the custom behavior of each progr
 - `transferLogicScript`: A token-specific Withdraw-0 script that implements the custom transfer logic for user-initiated transfers. This script validates whether a transfer is allowed based on the token's rules (e.g., allowlist checks, transfer limits, compliance rules).
 - `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties could be any Cardano user or specific groups (e.g., admins). This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
 - `issuanceLogicScript`: A token-specific Withdraw-0 script that implements the custom minting/burning logic for the programmable token. It defines who can mint new tokens, under what conditions, and the burning rules.
-- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by the hash of the token's specific issuanceLogicScript.
+- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by: (1) the `programmableLogicBase` credential, (2) the `registryMintingPolicy` policy ID, and (3) the credential of the token's specific `issuanceLogicScript`. The first two are shared infrastructure parameters, while the third varies per token.
 - `globalState`: An optional token-specific unique UTxO whose datum contains global information regarding the token (e.g., if it's frozen, if transfers are paused, total supply, etc.). Not all tokens require a global state.
 - `globalStateUnit`: The unit (policy + token name) of the NFT contained in the globalState UTxO. This NFT uniquely identifies the global state for a specific programmable token.
 
@@ -105,7 +112,7 @@ The creator writes a new transferLogicScript where they define the rules to tran
 
 Then they write a new issuanceLogicScript where they define who can mint and burn the new token.
 
-Then they deploy a new issuanceMintingPolicy instance parameterized by the hash of the new issuanceLogicScript.
+Then they deploy a new issuanceMintingPolicy instance parameterized by the `programmableLogicBase` credential, the `registryMintingPolicy` policy ID, and the credential of the new issuanceLogicScript.
 
 Finally, the creator adds a RegistryNode to the registry with the hashes of all the above scripts and with additional required information. The registration cannot happen if the policy has already been registered or if the issuanceMintingPolicy is wrong.
 
@@ -195,6 +202,29 @@ In this case, when creating a transfer transaction a reference input containing 
 To create a new programmable token, it must be properly registered in the registry.
 The on-chain validation won't allow the creator to cheat or deviate from the enforced rules.
 
+The `registryMintingPolicy` uses the following redeemer type:
+
+```ts
+type RegistryRedeemer {
+    RegistryInit
+    RegistryInsert { key: ByteArray, hashed_param: ByteArray }
+}
+```
+
+- `RegistryInit`: Initializes the registry with the origin node. This is used once during bootstrap
+- `RegistryInsert`: Inserts a new programmable token policy into the registry. `key` is the new token's policy ID and `hashed_param` is the hashed parameter used to derive the `issuanceMintingPolicy`
+
+The registration process validates that the `issuanceMintingPolicy` is correctly constructed using a reference NFT containing the following datum:
+
+```ts
+type IssuanceCborHex {
+    prefix_cbor_hex: ByteArray,
+    postfix_cbor_hex: ByteArray
+}
+```
+
+This datum contains the prefix and postfix bytes of the official `issuanceMintingPolicy` script. During registration, the validator reconstructs the expected policy ID from `prefix_cbor_hex + hashed_param + postfix_cbor_hex` and verifies it matches the `key` being registered.
+
 Recalling that the registry is an ordered linked list sorted by the `key` field, the transaction to
 register the token has the following requirements:
 1) The RegistryNode preceding the policy of the new token, called here prev_node, MUST be spent
@@ -211,7 +241,28 @@ and MUST include a newly minted NFT, under the `registryMintingPolicy`,
 with the programmable token policy as NFT name.
 6) Both the outputs MUST NOT have any reference script.
 7) Both the outputs address MUST **only** have payment credentials.
-8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by a custom `issuanceLogicScript`
+8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by the `programmableLogicBase` credential, the `registryMintingPolicy` policy ID, and the credential of a custom `issuanceLogicScript`
+
+#### issuanceMintingPolicy Redeemer
+
+The redeemer passed to the `issuanceMintingPolicy` follows this type:
+
+```ts
+type SmartTokenMintingAction {
+    minting_logic_cred: Credential,
+    minting_registry_proof: MintingRegistryProof
+}
+
+type MintingRegistryProof {
+    RefInput { index: Int }
+    OutputIndex { index: Int }
+}
+```
+
+- `minting_logic_cred`: The credential of the `issuanceLogicScript` that must be invoked (via withdraw-zero). Must match the credential the policy was parameterized with
+- `minting_registry_proof`: Proof that the token is registered in the registry:
+  - `OutputIndex { index }`: Used during the **first mint** (registration transaction). The registry node is being created in this transaction at the specified output index. All minted tokens MUST be sent to `programmableLogicBase` addresses
+  - `RefInput { index }`: Used for **subsequent mints**. The registry node exists as a reference input at the specified index. If `programmableLogicBase` UTxOs are also being spent in the transaction, output validation is delegated to `programmableLogicGlobal`. Otherwise, the `issuanceMintingPolicy` validates that all minted tokens go to `programmableLogicBase` addresses
 
 ### Transfer
 
@@ -222,14 +273,11 @@ The redeemer passed to the programmableLogicGlobal stake validator follows this 
 ```ts
 type ProgrammableLogicGlobalRedeemer {
     TransferAct {
-        registryProofs: List<RegistryProof>,
-        mintProofs: List<RegistryProof>
+        proofs: List<RegistryProof>
     }
     ThirdPartyAct {
         registry_node_idx: Int,
-        input_idxs: List<Int>,
-        outputs_start_idx: Int,
-        length_input_idxs: Int
+        outputs_start_idx: Int
     }
 }
 
@@ -258,20 +306,16 @@ The `TransferAct` constructor is used when the owner of the programmable tokens 
 This represents the standard transfer flow initiated by the token owner.
 
 When using this constructor:
-1. The `registryProofs` field MUST contain a list of proofs, one for each non-lovelace token policy present in any spent UTxO from programmableLogicBase
+1. The `proofs` field MUST contain a list of proofs, one for each distinct non-lovelace token policy present in any spent UTxO from programmableLogicBase **or** in `tx.mint`. Minted/burned token values are folded into the input asset accumulator, so a single proof list validates both spent and minted/burned policies together
 2. For each proof of type `TokenExists`:
    - The corresponding RegistryNode MUST be included as a reference input at the specified index (`node_idx`)
    - The token's `transfer_logic_script` MUST be executed in the transaction (via withdraw-zero)
 3. For each proof of type `TokenDoesNotExist`:
    - The covering RegistryNode MUST be included as a reference input at the specified index (`node_idx`)
    - The token is treated as a normal CNT and can be transferred without additional validation
-4. The `mintProofs` field MUST contain a list of proofs, one for each token policy present in `tx.mint`. Each proof validates the minted/burned programmable token against the registry directory, following the same `TokenExists`/`TokenDoesNotExist` rules as `registryProofs`
-   - If `tx.mint` is empty and `mintProofs` is empty, this is a no-op (pure transfer, no minting)
-   - If `tx.mint` is non-empty but `mintProofs` is empty, the transaction MUST be rejected
-   - If `tx.mint` is empty but `mintProofs` is non-empty, the transaction MUST be rejected
 
 **Output Value Calculation:**
-The expected output value at programmableLogicBase addresses is the sum of validated input programmable token value **plus** validated mint value. This enables:
+The expected output value at programmableLogicBase addresses is the sum of validated input programmable token value **plus** validated mint value (since mint is merged into the input accumulator). This enables:
 - **Partial burn during transfer**: e.g., input 100 tokens, burn 30, output 70
 - **Minting during transfer**: e.g., input 100 tokens, mint 50, output 150
 
@@ -284,46 +328,11 @@ This constructor supports **multiple UTxOs** in a single transaction for batch o
 
 When using this constructor:
 1. `registry_node_idx`: The index (in reference inputs) of the `RegistryNode` for the token being acted upon
-2. `input_idxs`: A list of integers encoding the selected transaction inputs as **skip counts** over `tx.inputs`
-3. `outputs_start_idx`: The index where corresponding outputs begin in the transaction outputs
-4. `length_input_idxs`: The expected length of `input_idxs` (used for validation)
-
-**Meaning of `input_idxs`**
-
-`input_idxs` is not a list of absolute transaction-input indices after the first element.
-
-Instead, it encodes an ordered subsequence of `tx.inputs` incrementally:
-
-- `input_idxs[0]` is the absolute index of the first selected input in `tx.inputs`
-- for each `i > 0`, `input_idxs[i]` is the number of inputs to skip after the previously selected input before selecting
-the next one
-
-Equivalently, if the selected inputs are at absolute positions
-
-`a0 < a1 < a2 < ... < an`
-
-then
-
-`input_idxs = [a0, a1 - a0 - 1, a2 - a1 - 1, ..., an - a(n-1) - 1]`
-
-Conversely, the absolute positions can be reconstructed as:
-
-- `a0 = input_idxs[0]`
-- `ai = a(i-1) + input_idxs[i] + 1` for `i > 0`
-
-In particular, for `i > 0`, a value of `0` means that the next selected input is immediately after the previous selected
-input in `tx.inputs` (i.e. there are zero intervening inputs).
-
-This encoding allows the validator to traverse `tx.inputs` incrementally by repeatedly dropping from the remaining suffix,
-rather than restarting from the beginning for each selected input.
+2. `outputs_start_idx`: The index where corresponding outputs begin in the transaction outputs. Outputs before this index are not paired with inputs, but any programmable tokens of the seized policy found at programmableLogicBase addresses in those earlier outputs still count toward the output-side balance invariant. This allows the ThirdPartyAct to coexist in the same transaction with other actions that produce earlier PLB outputs (e.g., a concurrent TransferAct)
 
 **Input/Output Pairing**
 
-Let `a0, a1, ..., an` be the absolute input positions obtained by decoding `input_idxs` as described above.
-
-Then the selected input at `tx.inputs[ai]` is paired with the output at:
-
-`tx.outputs[outputs_start_idx + i]`
+The validator iterates all `tx.inputs` sequentially. Every input at a programmableLogicBase address is automatically paired with the next consecutive output starting from `tx.outputs[outputs_start_idx]`. Non-programmableLogicBase inputs are skipped.
 
 **Validation Requirements:**
 - The RegistryNode at `registry_node_idx` MUST exist and contain the token's configuration
@@ -341,16 +350,16 @@ Instead of requiring each paired output to contain the input value minus seized 
 - **Wipe** (seize + burn): Seize tokens and burn them in the same transaction via `tx.mint` with negative quantities. The burn reduces the expected output accordingly
 - **Top-up** (seize + mint): Seize tokens and mint additional ones in the same transaction
 
-The adjusted input for the balance check is computed as: `total_input_policy_tokens + tx.mint_policy_tokens`, filtering out non-positive entries. Authorization for minting/burning is enforced separately by the `issuanceMintingPolicy` validator and the Cardano ledger.
+The adjusted input for the balance check is computed as: `total_input_policy_tokens + tx.mint_policy_tokens` (where burns contribute as negative quantities, naturally reducing the expected output). Authorization for minting/burning is enforced separately by the `issuanceMintingPolicy` validator and the Cardano ledger.
 
 #### RegistryProof Requirements
 
-The `registryProofs` list MUST satisfy the following requirements:
+The `proofs` list MUST satisfy the following requirements:
 
-1. **Completeness**: The list MUST include one proof for each distinct non-lovelace token policy present in any UTxO being spent from programmableLogicBase
+1. **Completeness**: The list MUST include one proof for each distinct non-lovelace token policy present in any UTxO being spent from programmableLogicBase **or** in `tx.mint`
 2. **Ordering**: The list order MUST match the lexicographic ordering of the token policies.
    For example, if spending UTxOs contains policies A, B, and C (in lexicographic order),
-   then `registryProofs[0]` is for policy A, `registryProofs[1]` for policy B, and `registryProofs[2]` for policy C
+   then `proofs[0]` is for policy A, `proofs[1]` for policy B, and `proofs[2]` for policy C
 3. **Correctness**: Each proof must accurately represent the registration status of the corresponding token
 
 (For reference, a TypeScript implementation of lexicographic ordering can be found
@@ -376,20 +385,16 @@ The programmableLogicGlobal stake validator performs the following validation:
    - If the stake credential is a script hash, verify that script is executed in the transaction
    - Exception: ThirdPartyAct bypasses this check (third parties don't need user permission)
 
-2. **Proof Validation** (TransferAct only): For each RegistryProof in `registryProofs`:
+2. **Proof Validation** (TransferAct only): For each RegistryProof in `proofs` (which covers both spent and minted/burned policies):
    - Verify the referenced RegistryNode exists at the specified index in reference inputs
    - For TokenExists: verify the RegistryNode's `key` matches the policy being validated
    - For TokenDoesNotExist: verify the covering node relationship (prev.key < unregistered < prev.next)
 
-3. **Mint Proof Validation** (TransferAct only): For each RegistryProof in `mintProofs`:
-   - Validate each minted/burned programmable token policy against the registry directory, using the same TokenExists/TokenDoesNotExist rules as step 2
-   - If `tx.mint` is non-empty, `mintProofs` MUST be non-empty (and vice versa)
-
-4. **Logic Script Execution**: For each registered programmable token:
+3. **Logic Script Execution**: For each registered programmable token:
    - TransferAct: verify the token's `transfer_logic_script` is executed (appears in withdrawals)
    - ThirdPartyAct: verify the token's `third_party_transfer_logic_script` is executed
 
-5. **Output Validation**:
+4. **Output Validation**:
    - TransferAct: Verify that outputs at programmableLogicBase addresses contain at least the expected programmable token value (validated input value + validated mint value). All programmable tokens in outputs MUST remain at programmableLogicBase addresses with valid stake credentials
    - ThirdPartyAct: Verify input/output pair constraints (same address, same datum, unchanged non-policy assets, changed policy tokens) and enforce the balance invariant (total output policy tokens at programmableLogicBase >= total input policy tokens adjusted for mints/burns)
 
@@ -397,14 +402,14 @@ The programmableLogicGlobal stake validator performs the following validation:
 
 Depending on the substandard and the specific programmable token implementation, additional reference inputs MAY be required:
 
-1. **Global State**: If the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy MUST be included
+1. **Global State**: Depending on the substandard implementation, if the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy might be required. The `transferLogicScript`, `thirdPartyTransferLogicScript`, or `issuanceMintingPolicy` might enforce its inclusion. The exact requirements depend on the substandard (see "Existing substandards" section)
 2. **User State**: Depending on the substandard implementation, one or more reference inputs representing user state MAY be required. The exact requirements depend on the substandard (see "Existing substandards" section)
 
 #### Security Considerations for Transfers
 
 - The programmableLogicBase/programmableLogicGlobal split ensures all programmable tokens can only be spent if proper validation occurs
 - The RegistryProof mechanism prevents bypassing transfer restrictions by claiming a token is unregistered when it actually is registered
-- Minted/burned programmable tokens MUST be validated against the registry via `mintProofs`, preventing unvalidated tokens from bypassing the directory check
+- Minted/burned programmable tokens are validated against the registry via the same `proofs` list as spent tokens (mint value is folded into the input accumulator), preventing unvalidated tokens from bypassing the directory check
 - Third-party actions provide a mechanism for compliance (seizure, freezes, wipe) while maintaining clear on-chain definitions of third-party capabilities
 - The balance invariant ensures seized tokens remain within the programmable token system (at programmableLogicBase addresses) and cannot escape to external addresses
 - The authorization check ensures users maintain control over their tokens (except when third-party actions are explicitly defined)
