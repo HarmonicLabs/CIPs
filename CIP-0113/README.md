@@ -75,7 +75,14 @@ These components form the infrastructure layer shared by ALL programmable tokens
 These components form the common validation infrastructure shared by ALL programmable tokens:
 
 - `programmableLogicBase`: The unique Spend script that holds all existing programmable tokens. All programmable tokens live at addresses with this script as the payment credential. This script acts as a gatekeeper, delegating actual validation to the programmableLogicGlobal stake validator.
-- `programmableLogicGlobal`: The Stake validator that performs the actual validation logic for transfers and third-party actions. It is invoked via the withdraw-zero pattern when programmable tokens are spent from the programmableLogicBase script.
+- `programmableLogicGlobal`: The Stake validator that performs the actual validation logic for transfers and third-party actions. It is invoked via the withdraw-zero pattern when programmable tokens are spent from the programmableLogicBase script. It is parameterized by a `protocolParametersPolicy` and discovers its configuration at runtime from a reference input containing a `ProtocolParams` NFT with the following inline datum:
+    ```ts
+    type ProgrammableLogicGlobalParams {
+        registry_node_cs: PolicyId,
+        prog_logic_cred: Credential
+    }
+    ```
+    Where `registry_node_cs` is the policy ID of the `registryMintingPolicy` and `prog_logic_cred` is the credential of the `programmableLogicBase` script.
 - `smart wallet`: The set of UTxOs living inside the programmableLogicBase script that belong to a specific user. Ownership is determined by the stake credential attached to the UTxOs, not the payment credential (which is always programmableLogicBase).
 
 ### Layer 3: Substandard Components
@@ -194,6 +201,29 @@ In this case, when creating a transfer transaction a reference input containing 
 
 To create a new programmable token, it must be properly registered in the registry.
 The on-chain validation won't allow the creator to cheat or deviate from the enforced rules.
+
+The `registryMintingPolicy` uses the following redeemer type:
+
+```ts
+type RegistryRedeemer {
+    RegistryInit
+    RegistryInsert { key: ByteArray, hashed_param: ByteArray }
+}
+```
+
+- `RegistryInit`: Initializes the registry with the origin node. This is used once during bootstrap
+- `RegistryInsert`: Inserts a new programmable token policy into the registry. `key` is the new token's policy ID and `hashed_param` is the hashed parameter used to derive the `issuanceMintingPolicy`
+
+The registration process validates that the `issuanceMintingPolicy` is correctly constructed using a reference NFT containing the following datum:
+
+```ts
+type IssuanceCborHex {
+    prefix_cbor_hex: ByteArray,
+    postfix_cbor_hex: ByteArray
+}
+```
+
+This datum contains the prefix and postfix bytes of the official `issuanceMintingPolicy` script. During registration, the validator reconstructs the expected policy ID from `prefix_cbor_hex + hashed_param + postfix_cbor_hex` and verifies it matches the `key` being registered.
 
 Recalling that the registry is an ordered linked list sorted by the `key` field, the transaction to
 register the token has the following requirements:
