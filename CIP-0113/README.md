@@ -373,7 +373,8 @@ Both fields are hints that the validator resolves and then checks, rather than v
 wrong `params_idx` or `wdrl_idx` resolves to something other than what the validator requires and the
 check fails, so a dishonest hint can only invalidate its own transaction. This is the general
 discipline for indices throughout this standard: the caller states where a thing is, and the
-validator confirms that it is what was claimed, which replaces a search with a lookup.
+validator confirms that it is what was claimed, so correctness never depends on the hint being
+honest.
 
 Because the protocol parameters are read at runtime, a mandatory reference input holding the
 protocol parameters NFT is required by every transaction spending programmable tokens.
@@ -665,9 +666,9 @@ Programmable token transactions have additional script execution costs:
 - Batching multiple transfers of the same token is more efficient than separate transactions
 - `programmableLogicBase` runs once per programmable-token input, so its cost scales with the number
   of such inputs rather than with the number of policies
-- Costs differ by action, because each action loads only its own delegate as a reference script. The
-  transfer delegate is on the path of every ordinary transfer; third-party and unfracking
-  transactions load their own delegate instead and never load the transfer delegate at all
+- Each action loads only its own delegate. The transfer delegate is on the path of every ordinary
+  transfer; third-party and unfracking transactions reference their own delegate instead and do not
+  load the transfer delegate
 
 #### Security Considerations
 
