@@ -527,6 +527,49 @@ Depending on the substandard and the specific programmable token implementation,
 - The authorization check ensures users maintain control over their tokens (except when third-party actions are explicitly defined)
 - ThirdPartyAct supports batch operations on multiple UTxOs while requiring policy token changes to prevent DoS attacks
 
+### Protocol upgradability
+
+The credentials that make up a deployment are held in the protocol parameters datum as data, rather
+than being compiled into the scripts that consume them. A deployment can therefore be re-pointed
+without redeploying the tokens that depend on it.
+
+**What MAY be re-pointed.** The `programmableLogicGlobal` credential, the protocol-level issuance
+logic credential, and the action delegate credentials. Replacing any of these takes effect for every
+programmable token at once, since each is read live at validation time.
+
+**What MUST NOT move.** The `programmableLogicBase` credential is the payment credential of every
+smart wallet address in the deployment. Changing it would relocate every holder's funds, so it is not
+part of the upgradable surface; a deployment that needs a different one is a different deployment,
+identified by its own bootstrap transaction. The token-minting policy of an individual programmable
+token is likewise permanent, which is what allows a token's identity to survive an upgrade of the
+logic that governs it.
+
+**Authorisation.** The right to perform an upgrade is itself a credential recorded in the protocol
+parameters. The standard does not prescribe what that credential is: a single key, a multi-signature
+arrangement, a governance mechanism, or a script implementing any other rule all satisfy it equally,
+and the choice is a property of the deployment rather than of CIP-113. Implementations MUST document
+which they use.
+
+**Requirements on the upgrade path.** A conforming deployment MUST satisfy the following, whatever
+authority it chooses:
+
+1. A change of the upgrade authority MUST be two-phase: a nomination, then a separate promotion of
+   the standing nominee. Replacing the authority in a single step risks handing control to a
+   credential that does not exist or cannot act, which is unrecoverable.
+2. The promotion MUST be authorised by the nominee itself, which is the evidence that the incoming
+   authority exists, can act, and consents.
+3. A change of protocol wiring MUST NOT carry a change of the upgrade authority, and vice versa, so
+   that an authority handover is always visible on chain as a transaction of its own rather than as
+   a rider on a parameter change.
+4. Each upgrade transaction MUST declare which of these it is, so that each may be validated as one
+   closed rule set.
+
+**Consequences for integrators.** Because delegate credentials are read live, an integrator holding
+a programmable token cannot assume that the logic which validated a past transfer is the logic that
+will validate the next one. Where that matters, the protocol parameters UTxO — not a cached script
+hash — is the authority on the current wiring, and the upgrade authority recorded there is the
+correct subject of any trust assessment of a deployment.
+
 ### CIP-113 Version
 
 A **CIP-113 version** is identified by the hash of the bootstrap transaction that initializes the framework (empty registry, protocol params, issuance script). This hash locks in all contract hashes for that deployment.
