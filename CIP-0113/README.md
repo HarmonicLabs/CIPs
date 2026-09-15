@@ -644,9 +644,18 @@ Example implementation: [CIP-113 Policy Manager](https://cip113-policy-manager-d
 #### Transaction Construction
 
 DeFi protocols constructing transactions with programmable tokens MUST:
-1. Include `registryNode` as reference input for each programmable token policy (or proof of non-registration)
-2. Execute `transferLogicScript` withdrawal (amount = 0) for each programmable token
-3. Send programmable tokens ONLY to properly derived smart wallet addresses (`programmableLogicBase` as payment credential, owner's stake credential)
+1. Include the protocol parameters UTxO as a reference input, and address it by `params_idx` in each
+   `programmableLogicBase` input's redeemer
+2. Include `registryNode` as reference input for each programmable token policy (or proof of non-registration)
+3. Execute the `programmableLogicGlobal` withdrawal (amount = 0) declaring the action, and address its
+   position in the withdrawal map by `wdrl_idx` in each `programmableLogicBase` input's redeemer
+4. Execute the withdrawal (amount = 0) of the delegate for that action, carrying the delegate's own
+   redeemer
+5. Execute `transferLogicScript` withdrawal (amount = 0) for each programmable token
+6. Send programmable tokens ONLY to properly derived smart wallet addresses (`programmableLogicBase` as payment credential, owner's stake credential)
+
+Steps 1 and 3 are easy to omit when adapting an existing integration, because neither is visible in
+the token's own configuration: both are properties of the deployment, read at validation time.
 
 #### Gas Efficiency
 
@@ -654,6 +663,11 @@ Programmable token transactions have additional script execution costs:
 - Each unique policy requires one registry proof
 - The `transferLogicScript` execution adds to transaction fees
 - Batching multiple transfers of the same token is more efficient than separate transactions
+- `programmableLogicBase` runs once per programmable-token input, so its cost scales with the number
+  of such inputs rather than with the number of policies
+- Costs differ by action, because each action loads only its own delegate as a reference script. The
+  transfer delegate is on the path of every ordinary transfer; third-party and unfracking
+  transactions load their own delegate instead and never load the transfer delegate at all
 
 #### Security Considerations
 
