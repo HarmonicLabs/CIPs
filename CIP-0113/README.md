@@ -98,7 +98,7 @@ To know a user's smart wallet address, check the dedicated following section.
 
 The creator wants to release a new programmable token.
 
-The registry (along with registrySpendScript and registryMintingPolicy), programmableLogicBase, and programmableLogicGlobal are already deployed on-chain as the shared infrastructure (Layers 1 and 2).
+The registry (along with registrySpendScript and registryMintingPolicy), programmableLogicBase, programmableLogicGlobal, the action delegates and the protocol parameters UTxO are already deployed on-chain as the shared infrastructure (Layers 1 and 2). The creator deploys none of these and is not required to know their hashes: the wiring is read from the protocol parameters at validation time.
 
 The creator writes a new transferLogicScript where they define the rules to transfer the new token (e.g., allowlist checks, transfer limits).
 
