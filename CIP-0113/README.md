@@ -484,9 +484,12 @@ For example:
 - You must include the RegistryNode for policy C as a reference input (at `node_idx`)
 - Because C < D < E (lexicographically), this proves D is not in the registry
 
-#### programmableLogicGlobal Validation
+#### Validation performed by the action delegates
 
-The programmableLogicGlobal stake validator performs the following validation:
+`programmableLogicGlobal` validates nothing itself: it requires that the declared action's delegate
+was invoked, and the delegate named below performs the validation for that action. The numbering
+below is therefore a description of each delegate's obligations, not of steps taken by a single
+script.
 
 1. **Authorization Check** (TransferAct only): For each spent UTxO from programmableLogicBase:
    - If the stake credential is a public key hash, verify the transaction is signed by that key
@@ -502,20 +505,33 @@ The programmableLogicGlobal stake validator performs the following validation:
    - Validate each minted/burned programmable token policy against the registry directory, using the same TokenExists/TokenDoesNotExist rules as step 2
    - If `tx.mint` is non-empty, `mintProofs` MUST be non-empty (and vice versa)
 
-4. **Logic Script Execution**: For each registered programmable token:
-   - TransferAct: verify the token's `transfer_logic_script` is executed (appears in withdrawals)
-   - ThirdPartyAct: verify the token's `third_party_logic_script` is executed
+4. **Logic Script Execution**: For each registered programmable token, the delegate verifies that the
+   token's own substandard script for this action is executed, i.e. appears in the transaction's
+   withdrawals:
+   - TransferAct: the token's `transfer_logic_script`
+   - ThirdPartyAct: the token's `third_party_logic_script`
+   - UnfrackingAct: the token's `unfracking_logic_script`. A registry node whose
+     `unfracking_logic_script` is an empty public-key credential has no such script, so no unfracking
+     action can satisfy this requirement and unfracking is thereby forbidden for that policy
 
 5. **Output Validation**:
    - TransferAct: Verify that outputs at programmableLogicBase addresses contain at least the expected programmable token value (validated input value + validated mint value). All programmable tokens in outputs MUST remain at programmableLogicBase addresses with valid stake credentials
    - ThirdPartyAct: Verify input/output pair constraints (same address, same datum, unchanged non-policy assets, changed policy tokens) and enforce the balance invariant (total output policy tokens at programmableLogicBase >= total input policy tokens adjusted for mints/burns)
 
-#### Additional Reference Inputs
+#### Reference Inputs
+
+Every transaction spending programmable tokens MUST include:
+
+1. **Protocol parameters**: the UTxO holding the protocol parameters NFT. `programmableLogicBase`
+   reads the live `programmableLogicGlobal` credential from its datum on every such transaction, and
+   addresses it by `params_idx` in the `BaseSpendRedeemer`
+2. **Registry nodes**: one RegistryNode for each policy requiring a registry proof, as described in
+   the RegistryProof requirements above
 
 Depending on the substandard and the specific programmable token implementation, additional reference inputs MAY be required:
 
-1. **Global State**: If the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy MUST be included
-2. **User State**: Depending on the substandard implementation, one or more reference inputs representing user state MAY be required. The exact requirements depend on the substandard (see "Existing substandards" section)
+3. **Global State**: If the RegistryNode's `global_state_cs` field is non-empty, a reference input containing an NFT with that policy MUST be included
+4. **User State**: Depending on the substandard implementation, one or more reference inputs representing user state MAY be required. The exact requirements depend on the substandard (see "Existing substandards" section)
 
 #### Security Considerations for Transfers
 
