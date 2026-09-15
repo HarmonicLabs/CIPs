@@ -294,16 +294,9 @@ The redeemer passed to the programmableLogicGlobal stake validator follows this 
 
 ```ts
 type ProgrammableLogicGlobalRedeemer {
-    TransferAct {
-        registryProofs: List<RegistryProof>,
-        mintProofs: List<RegistryProof>
-    }
-    ThirdPartyAct {
-        registry_node_idx: Int,
-        input_idxs: List<Int>,
-        outputs_start_idx: Int,
-        length_input_idxs: Int
-    }
+    TransferAct
+    ThirdPartyAct
+    UnfrackingAct
 }
 
 type RegistryProof {
@@ -313,6 +306,30 @@ type RegistryProof {
     TokenDoesNotExist {
         node_idx: Int
     }
+}
+```
+
+The arms carry no payload. Everything an action needs — registry proofs, node indices, output
+offsets — travels in the redeemer of that action's delegate, where the delegate validates it.
+Repeating any of it in the dispatcher's redeemer would create a second, unchecked claim about the
+same fact, and forcing the two to agree would require the dispatcher to decode the delegate's
+redeemer, which is the work this split exists to avoid.
+
+The delegate redeemers are:
+
+```ts
+type TransferRedeemer {
+    proofs: List<RegistryProof>
+}
+
+type ThirdPartyRedeemer {
+    registry_node_idx: Int,
+    outputs_start_idx: Int
+}
+
+type UnfrackingRedeemer {
+    registry_node_idx: Int,
+    outputs_start_idx: Int
 }
 ```
 
@@ -363,30 +380,22 @@ protocol parameters NFT is required by every transaction spending programmable t
 | `ThirdPartyAct` | An action performed without the holder's consent, as permitted by the token's `third_party_logic_script` |
 | `UnfrackingAct` | Holder-driven restructuring of the holder's own UTxOs, leaving ownership unchanged, as constrained by the token's `unfracking_logic_script` |
 
-> **Editorial note.** The redeemer type and the per-constructor sections that follow document the
-> shapes as previously specified. The reference implementation has since moved the per-action
-> payloads out of the `programmableLogicGlobal` redeemer and into each delegate's own redeemer, and
-> `UnfrackingAct` is not yet described below. These shape changes are under review and are
-> deliberately not applied here.
 
 #### TransferAct Constructor
 
 The `TransferAct` constructor is used when the owner of the programmable tokens wants to transfer them.
 This represents the standard transfer flow initiated by the token owner.
 
-When using this constructor:
-1. The `registryProofs` field MUST contain a list of proofs, one for each non-lovelace token policy present in any spent UTxO from programmableLogicBase
+When using this action, the `transfer` delegate's `TransferRedeemer` is filled as follows:
+1. The `proofs` field MUST contain a list of proofs, one for each distinct non-lovelace token policy
+present in any spent UTxO from programmableLogicBase **or** in `tx.mint`. Minted and burned values are
+folded into the same accumulator as spent values, so one list validates both
 2. For each proof of type `TokenExists`:
    - The corresponding RegistryNode MUST be included as a reference input at the specified index (`node_idx`)
    - The token's `transfer_logic_script` MUST be executed in the transaction (via withdraw-zero)
 3. For each proof of type `TokenDoesNotExist`:
    - The covering RegistryNode MUST be included as a reference input at the specified index (`node_idx`)
    - The token is treated as a normal CNT and can be transferred without additional validation
-4. The `mintProofs` field MUST contain a list of proofs, one for each token policy present in `tx.mint`. Each proof validates the minted/burned programmable token against the registry directory, following the same `TokenExists`/`TokenDoesNotExist` rules as `registryProofs`
-   - If `tx.mint` is empty and `mintProofs` is empty, this is a no-op (pure transfer, no minting)
-   - If `tx.mint` is non-empty but `mintProofs` is empty, the transaction MUST be rejected
-   - If `tx.mint` is empty but `mintProofs` is non-empty, the transaction MUST be rejected
-
 **Output Value Calculation:**
 The expected output value at programmableLogicBase addresses is the sum of validated input programmable token value **plus** validated mint value. This enables:
 - **Partial burn during transfer**: e.g., input 100 tokens, burn 30, output 70
@@ -399,48 +408,21 @@ without the explicit permission of the token owner. Third parties are defined by
 
 This constructor supports **multiple UTxOs** in a single transaction for batch operations.
 
-When using this constructor:
+When using this action, the `third_party` delegate's `ThirdPartyRedeemer` is filled as follows:
 1. `registry_node_idx`: The index (in reference inputs) of the `RegistryNode` for the token being acted upon
-2. `input_idxs`: A list of integers encoding the selected transaction inputs as **skip counts** over `tx.inputs`
-3. `outputs_start_idx`: The index where corresponding outputs begin in the transaction outputs
-4. `length_input_idxs`: The expected length of `input_idxs` (used for validation)
-
-**Meaning of `input_idxs`**
-
-`input_idxs` is not a list of absolute transaction-input indices after the first element.
-
-Instead, it encodes an ordered subsequence of `tx.inputs` incrementally:
-
-- `input_idxs[0]` is the absolute index of the first selected input in `tx.inputs`
-- for each `i > 0`, `input_idxs[i]` is the number of inputs to skip after the previously selected input before selecting
-the next one
-
-Equivalently, if the selected inputs are at absolute positions
-
-`a0 < a1 < a2 < ... < an`
-
-then
-
-`input_idxs = [a0, a1 - a0 - 1, a2 - a1 - 1, ..., an - a(n-1) - 1]`
-
-Conversely, the absolute positions can be reconstructed as:
-
-- `a0 = input_idxs[0]`
-- `ai = a(i-1) + input_idxs[i] + 1` for `i > 0`
-
-In particular, for `i > 0`, a value of `0` means that the next selected input is immediately after the previous selected
-input in `tx.inputs` (i.e. there are zero intervening inputs).
-
-This encoding allows the validator to traverse `tx.inputs` incrementally by repeatedly dropping from the remaining suffix,
-rather than restarting from the beginning for each selected input.
+2. `outputs_start_idx`: The index in `tx.outputs` at which the paired continuing outputs begin
 
 **Input/Output Pairing**
 
-Let `a0, a1, ..., an` be the absolute input positions obtained by decoding `input_idxs` as described above.
+The delegate walks `tx.inputs` in order. Every input at a programmableLogicBase address is paired
+with the next consecutive output, starting from `tx.outputs[outputs_start_idx]`; inputs at other
+addresses are skipped and consume no output. The *n*-th programmableLogicBase input encountered is
+therefore paired with `tx.outputs[outputs_start_idx + n]`.
 
-Then the selected input at `tx.inputs[ai]` is paired with the output at:
-
-`tx.outputs[outputs_start_idx + i]`
+Outputs before `outputs_start_idx` are not paired with any input, but any programmable tokens of the
+subject policy that they hold at programmableLogicBase addresses still count toward the output side
+of the balance invariant below. This lets a third-party action share a transaction with other actions
+that produce earlier programmableLogicBase outputs.
 
 **Validation Requirements:**
 - The RegistryNode at `registry_node_idx` MUST exist and contain the token's configuration
@@ -462,12 +444,12 @@ The adjusted input for the balance check is computed as: `total_input_policy_tok
 
 #### RegistryProof Requirements
 
-The `registryProofs` list MUST satisfy the following requirements:
+The `proofs` list MUST satisfy the following requirements:
 
-1. **Completeness**: The list MUST include one proof for each distinct non-lovelace token policy present in any UTxO being spent from programmableLogicBase
+1. **Completeness**: The list MUST include one proof for each distinct non-lovelace token policy present in any UTxO being spent from programmableLogicBase **or** in `tx.mint`
 2. **Ordering**: The list order MUST match the lexicographic ordering of the token policies.
    For example, if spending UTxOs contains policies A, B, and C (in lexicographic order),
-   then `registryProofs[0]` is for policy A, `registryProofs[1]` for policy B, and `registryProofs[2]` for policy C
+   then `proofs[0]` is for policy A, `proofs[1]` for policy B, and `proofs[2]` for policy C
 3. **Correctness**: Each proof must accurately represent the registration status of the corresponding token
 
 (For reference, a TypeScript implementation of lexicographic ordering can be found
@@ -496,16 +478,12 @@ script.
    - If the stake credential is a script hash, verify that script is executed in the transaction
    - Exception: ThirdPartyAct bypasses this check (third parties don't need user permission)
 
-2. **Proof Validation** (TransferAct only): For each RegistryProof in `registryProofs`:
+2. **Proof Validation** (TransferAct only): For each RegistryProof in `proofs`, which covers spent and minted or burned policies alike:
    - Verify the referenced RegistryNode exists at the specified index in reference inputs
    - For TokenExists: verify the RegistryNode's `key` matches the policy being validated
    - For TokenDoesNotExist: verify the covering node relationship (prev.key < unregistered < prev.next)
 
-3. **Mint Proof Validation** (TransferAct only): For each RegistryProof in `mintProofs`:
-   - Validate each minted/burned programmable token policy against the registry directory, using the same TokenExists/TokenDoesNotExist rules as step 2
-   - If `tx.mint` is non-empty, `mintProofs` MUST be non-empty (and vice versa)
-
-4. **Logic Script Execution**: For each registered programmable token, the delegate verifies that the
+3. **Logic Script Execution**: For each registered programmable token, the delegate verifies that the
    token's own substandard script for this action is executed, i.e. appears in the transaction's
    withdrawals:
    - TransferAct: the token's `transfer_logic_script`
@@ -514,7 +492,7 @@ script.
      `unfracking_logic_script` is an empty public-key credential has no such script, so no unfracking
      action can satisfy this requirement and unfracking is thereby forbidden for that policy
 
-5. **Output Validation**:
+4. **Output Validation**:
    - TransferAct: Verify that outputs at programmableLogicBase addresses contain at least the expected programmable token value (validated input value + validated mint value). All programmable tokens in outputs MUST remain at programmableLogicBase addresses with valid stake credentials
    - ThirdPartyAct: Verify input/output pair constraints (same address, same datum, unchanged non-policy assets, changed policy tokens) and enforce the balance invariant (total output policy tokens at programmableLogicBase >= total input policy tokens adjusted for mints/burns)
 
@@ -537,7 +515,7 @@ Depending on the substandard and the specific programmable token implementation,
 
 - The programmableLogicBase/programmableLogicGlobal split ensures all programmable tokens can only be spent if proper validation occurs
 - The RegistryProof mechanism prevents bypassing transfer restrictions by claiming a token is unregistered when it actually is registered
-- Minted/burned programmable tokens MUST be validated against the registry via `mintProofs`, preventing unvalidated tokens from bypassing the directory check
+- Minted and burned programmable tokens are validated against the registry via the same `proofs` list as spent tokens, since mint value is folded into the input accumulator, preventing unvalidated tokens from bypassing the directory check
 - Third-party actions provide a mechanism for compliance (seizure, freezes, wipe) while maintaining clear on-chain definitions of third-party capabilities
 - The balance invariant ensures seized tokens remain within the programmable token system (at programmableLogicBase addresses) and cannot escape to external addresses
 - The authorization check ensures users maintain control over their tokens (except when third-party actions are explicitly defined)
