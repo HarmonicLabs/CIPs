@@ -84,7 +84,7 @@ These components form the common validation infrastructure shared by ALL program
 These components are token-specific and define the custom behavior of each programmable token. They are deployed per token and implement the "substandard":
 
 - `transferLogicScript`: A token-specific Withdraw-0 script that implements the custom transfer logic for user-initiated transfers. This script validates whether a transfer is allowed based on the token's rules (e.g., allowlist checks, transfer limits, compliance rules).
-- `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties are defined by the token's substandard: the standard places no constraint on who, if anyone, may invoke this script. This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
+- `thirdPartyLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties are defined by the token's substandard: the standard places no constraint on who, if anyone, may invoke this script. This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
 - `issuanceLogicScript`: A token-specific Withdraw-0 script that implements the custom minting/burning logic for the programmable token. It defines who can mint new tokens, under what conditions, and the burning rules.
 - `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by (1) the credential of the token's own minting logic — the substandard's Withdraw-0 script, which is the per-token entropy in the resulting policy — and (2) the policy of the protocol parameters NFT, which is shared infrastructure. Note the split of responsibilities: this policy is permanent, while the protocol-level `issuanceLogicScript` it defers to is read live from the protocol parameters and is therefore replaceable.
 - `globalState`: An optional token-specific unique UTxO whose datum contains global information regarding the token (e.g., if it's frozen, if transfers are paused, total supply, etc.). Not all tokens require a global state.
@@ -102,7 +102,7 @@ The registry (along with registrySpendScript and registryMintingPolicy), program
 
 The creator writes a new transferLogicScript where they define the rules to transfer the new token (e.g., allowlist checks, transfer limits).
 
-(Optional) Then they write a new thirdPartyTransferLogicScript where they define who can execute third-party actions and what those actions are (e.g., seizure, forced transfers, auto-compounding).
+(Optional) Then they write a new thirdPartyLogicScript where they define who can execute third-party actions and what those actions are (e.g., seizure, forced transfers, auto-compounding).
 
 Then they write a new issuanceLogicScript where they define who can mint and burn the new token.
 
@@ -116,7 +116,7 @@ Off-chain, any user can deterministically derive their smart wallet address (as 
 
 When a user wants to transfer some of their programmable tokens, the programmableLogicBase script delegates validation to the programmableLogicGlobal stake validator (via withdraw-zero pattern). For each token, a proof of registration (or non-registration) is required: if the policy is present in the registry then the associated transferLogicScript MUST be executed in the same transaction; if the policy is not present in the registry, the token is treated as a normal, non-programmable CNT and can always leave the programmableLogicBase script.
 
-At any moment, for each token, third parties can execute actions as defined in the thirdPartyTransferLogicScript.
+At any moment, for each token, third parties can execute actions as defined in the thirdPartyLogicScript.
 
 At any moment, for each token, issuers can mint more tokens or burn existing ones that are held by them.
 
@@ -627,7 +627,7 @@ Programmable token transactions have additional script execution costs:
 
 #### Security Considerations
 
-1. **Substandard Verification**: Verify the substandard before integration by reviewing its `thirdPartyTransferLogicScript`, answering two independent questions: (a) *what* actions can it authorise without the holder's consent (freeze, seize, forced transfer, rebase, etc.), and (b) *who* can trigger them. A script may be permissioned, permissionless, or restricted to actions that cannot reduce a holder's balance; the standard does not constrain this, so neither question can be answered from CIP-113 alone
+1. **Substandard Verification**: Verify the substandard before integration by reviewing its `thirdPartyLogicScript`, answering two independent questions: (a) *what* actions can it authorise without the holder's consent (freeze, seize, forced transfer, rebase, etc.), and (b) *who* can trigger them. A script may be permissioned, permissionless, or restricted to actions that cannot reduce a holder's balance; the standard does not constrain this, so neither question can be answered from CIP-113 alone
 2. **Registry Integrity**: Verify using the canonical registry; monitor for spoofing attempts
 3. **Smart Wallet Security**: Users retain full control via stake credentials; protocols cannot access funds without proper validation
 
@@ -765,10 +765,10 @@ Substandards define token-specific behavior (Layer 3 components). Each substanda
 | **Freeze and Seize** | Simplified stablecoin contract with compliance features (freeze, unfreeze, seize). Useful for testing all prog token capabilities. | [freeze-and-seize](https://github.com/cardano-foundation/cip113-programmable-tokens/tree/main/src/substandards/freeze-and-seize) |
 | **BaFin Standard** | Regulatory-compliant token standard developed by FluidTokens. | [fn-bafin-cardano-sc](https://github.com/FluidTokens/fn-bafin-cardano-sc) |
 
-Where a substandard's `thirdPartyTransferLogicScript` requires signatures from a designated key set — as
+Where a substandard's `thirdPartyLogicScript` requires signatures from a designated key set — as
 the freeze-and-seize substandard does — that key set is referred to as the substandard's *admin*. This is a
 property of that individual substandard and not of CIP-113: the standard fixes no permissioning for the
-`thirdPartyTransferLogicScript`, which MAY be permissioned, permissionless (e.g., an auto-compounding
+`thirdPartyLogicScript`, which MAY be permissioned, permissionless (e.g., an auto-compounding
 rebase any user can trigger), or restricted to actions that cannot reduce a holder's balance. Integrators
 MUST therefore determine a token's third-party capabilities and its trigger authority from its substandard,
 never from CIP-113 conformance alone.
