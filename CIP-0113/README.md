@@ -73,8 +73,10 @@ These components form the infrastructure layer shared by ALL programmable tokens
 
 These components form the common validation infrastructure shared by ALL programmable tokens:
 
-- `programmableLogicBase`: The unique Spend script that holds all existing programmable tokens. All programmable tokens live at addresses with this script as the payment credential. This script acts as a gatekeeper, delegating actual validation to the programmableLogicGlobal stake validator.
-- `programmableLogicGlobal`: The Stake validator that performs the actual validation logic for transfers and third-party actions. It is invoked via the withdraw-zero pattern when programmable tokens are spent from the programmableLogicBase script.
+- `programmableLogicBase`: The unique Spend script that holds all existing programmable tokens. All programmable tokens live at addresses with this script as the payment credential. It is parameterized by the `protocolParameters` NFT policy. Its only job is to locate the protocol parameters, read the live `programmableLogicGlobal` credential from them, and require that credential's withdraw-zero. It runs once per programmable-token input, so its cost is multiplied by every such input in a transaction, which is why it performs no other work and inspects no token.
+- `programmableLogicGlobal`: The Stake validator reached from `programmableLogicBase`. It is a dispatcher, not the validator of record: it is parameterized by the credentials of the action delegates (see below) and does exactly one thing — require that the delegate for the declared action was invoked in this transaction. All validation of an action is performed by that action's delegate.
+- `action delegates`: The Withdraw-0 scripts that hold the protocol's actual validation logic, one per action — transfer, third-party action, and unfracking. Each delegate carries its own redeemer, in which the indices and proofs that action needs travel and are validated by the delegate itself.
+- `protocolParameters`: A unique UTxO, marked by a one-shot NFT, whose inline datum holds the protocol's live wiring — the credentials of `programmableLogicGlobal`, of the protocol-level issuance logic, and of the transfer and third-party delegates. Because `programmableLogicBase` reads this wiring at runtime rather than being parameterized by it, the protocol's dispatch can be re-pointed without changing the address at which any token lives.
 - `smart wallet`: The set of UTxOs living inside the programmableLogicBase script that belong to a specific user. Ownership is determined by the stake credential attached to the UTxOs, not the payment credential (which is always programmableLogicBase).
 
 ### Layer 3: Substandard Components
@@ -316,12 +318,56 @@ type RegistryProof {
 
 #### Architecture: Delegation Pattern
 
-The programmableLogicBase script is a lightweight gatekeeper that:
-1. Accepts any redeemer (of type `Data`)
-2. Verifies that the programmableLogicGlobal stake validator is invoked in the transaction
-3. Delegates all validation logic to the programmableLogicGlobal stake validator
+Validation is delegated along a chain of four links, each of which narrows what the next one may be:
 
-The programmableLogicGlobal stake validator performs the actual validation when invoked via withdraw-zero.
+```
+programmableLogicBase -> protocolParameters -> programmableLogicGlobal -> action delegate
+```
+
+1. `programmableLogicBase` runs once per programmable-token input being spent. It locates the
+   protocol parameters UTxO among the reference inputs, reads one field from its datum — the live
+   `programmableLogicGlobal` credential — and requires that credential's withdraw-zero. It makes no
+   decision about the action being performed and never inspects a token.
+2. `programmableLogicGlobal` is parameterized at compile time by the credentials of the action
+   delegates. It reads the declared action from its redeemer and requires that action's delegate to
+   have been invoked. It performs no validation of its own.
+3. The action delegate validates the action.
+
+The redeemer of `programmableLogicBase` is:
+
+```ts
+type BaseSpendRedeemer {
+    params_idx: Int,
+    wdrl_idx: Int
+}
+```
+
+- `params_idx`: the index of the protocol parameters UTxO in the transaction's reference inputs.
+- `wdrl_idx`: the index of the `programmableLogicGlobal` credential's entry in the transaction's
+  withdrawal map, which the ledger orders script credentials first and bytewise within each kind.
+
+Both fields are hints that the validator resolves and then checks, rather than values it trusts. A
+wrong `params_idx` or `wdrl_idx` resolves to something other than what the validator requires and the
+check fails, so a dishonest hint can only invalidate its own transaction. This is the general
+discipline for indices throughout this standard: the caller states where a thing is, and the
+validator confirms that it is what was claimed, which replaces a search with a lookup.
+
+Because the protocol parameters are read at runtime, a mandatory reference input holding the
+protocol parameters NFT is required by every transaction spending programmable tokens.
+
+**Actions.** The standard defines three actions, each with its own delegate and its own redeemer:
+
+| Action | Purpose |
+|---|---|
+| `TransferAct` | An ordinary transfer, initiated by the holder |
+| `ThirdPartyAct` | An action performed without the holder's consent, as permitted by the token's `third_party_logic_script` |
+| `UnfrackingAct` | Holder-driven restructuring of the holder's own UTxOs, leaving ownership unchanged, as constrained by the token's `unfracking_logic_script` |
+
+> **Editorial note.** The redeemer type and the per-constructor sections that follow document the
+> shapes as previously specified. The reference implementation has since moved the per-action
+> payloads out of the `programmableLogicGlobal` redeemer and into each delegate's own redeemer, and
+> `UnfrackingAct` is not yet described below. These shape changes are under review and are
+> deliberately not applied here.
 
 #### TransferAct Constructor
 
