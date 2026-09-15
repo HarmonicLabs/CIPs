@@ -84,7 +84,7 @@ These components are token-specific and define the custom behavior of each progr
 - `transferLogicScript`: A token-specific Withdraw-0 script that implements the custom transfer logic for user-initiated transfers. This script validates whether a transfer is allowed based on the token's rules (e.g., allowlist checks, transfer limits, compliance rules).
 - `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties are defined by the token's substandard: the standard places no constraint on who, if anyone, may invoke this script. This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
 - `issuanceLogicScript`: A token-specific Withdraw-0 script that implements the custom minting/burning logic for the programmable token. It defines who can mint new tokens, under what conditions, and the burning rules.
-- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by the hash of the token's specific issuanceLogicScript.
+- `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by (1) the credential of the token's own minting logic — the substandard's Withdraw-0 script, which is the per-token entropy in the resulting policy — and (2) the policy of the protocol parameters NFT, which is shared infrastructure. Note the split of responsibilities: this policy is permanent, while the protocol-level `issuanceLogicScript` it defers to is read live from the protocol parameters and is therefore replaceable.
 - `globalState`: An optional token-specific unique UTxO whose datum contains global information regarding the token (e.g., if it's frozen, if transfers are paused, total supply, etc.). Not all tokens require a global state.
 - `globalStateUnit`: The unit (policy + token name) of the NFT contained in the globalState UTxO. This NFT uniquely identifies the global state for a specific programmable token.
 
@@ -104,7 +104,7 @@ The creator writes a new transferLogicScript where they define the rules to tran
 
 Then they write a new issuanceLogicScript where they define who can mint and burn the new token.
 
-Then they deploy a new issuanceMintingPolicy instance parameterized by the hash of the new issuanceLogicScript.
+Then they deploy a new issuanceMintingPolicy instance parameterized by the credential of their own minting logic script and by the protocol parameters policy.
 
 Finally, the creator adds a RegistryNode to the registry with the hashes of all the above scripts and with additional required information. The registration cannot happen if the policy has already been registered or if the issuanceMintingPolicy is wrong.
 
@@ -139,8 +139,10 @@ Every entry in the registry MUST have attached an inline datum following this st
 type RegistryNode {
     key: ByteArray,
     next: ByteArray,
+    minting_logic_script: Credential,
     transfer_logic_script: Credential,
-    third_party_transfer_logic_script: Credential,
+    third_party_logic_script: Credential,
+    unfracking_logic_script: Credential,
     global_state_cs: ByteArray
 }
 ```
@@ -161,6 +163,17 @@ MUST be a bytestring of length 28.
 
 As the registry is an ordered linked list, this is the next key (a tokenPolicy) in the registry in lexicographic order.
 
+#### `minting_logic_script`
+
+MUST be a Credential (either PubKeyCredential or ScriptCredential with a 28-byte hash).
+
+Represents the credential of the "Withdraw 0" script implementing the token's minting and burning
+logic. The substandard's minting logic locates its own RegistryNode by equality on this field, which
+yields the token's `key` (its policy) without recomputing the issuance hash.
+
+This field cannot lie: at registration the `registry` validator cryptographically binds it to the
+policy being registered (see the "Programmable token registration" section).
+
 #### `transfer_logic_script`
 
 MUST be a Credential (either PubKeyCredential or ScriptCredential with a 28-byte hash).
@@ -168,7 +181,7 @@ MUST be a Credential (either PubKeyCredential or ScriptCredential with a 28-byte
 Represents the credential of the "Withdraw 0" script to be executed in a transfer transaction for validation.
 This script implements the custom logic for user-initiated transfers.
 
-#### `third_party_transfer_logic_script`
+#### `third_party_logic_script`
 
 MUST be a Credential (either PubKeyCredential or ScriptCredential with a 28-byte hash).
 
@@ -176,6 +189,19 @@ Represents the credential of the "Withdraw 0" script that defines who can execut
 and what those actions are on the programmable token.
 
 This script is used for actions (such as seizure, forced transfers, or auto-compounding) that can be executed without explicit user permission.
+
+#### `unfracking_logic_script`
+
+MUST be a Credential (either PubKeyCredential or ScriptCredential with a 28-byte hash).
+
+Represents the credential whose "Withdraw 0" MUST be invoked by any unfracking action touching this
+policy — the issuer-declared constraint hook for holder-driven, same-owner restructuring of a smart
+wallet's UTxOs.
+
+The default is least-permission: an empty PubKeyCredential means unfracking is FORBIDDEN for this
+policy. A ScriptCredential delegates the decision to the issuer's hook validator. A
+PubKeyCredential gives signature-gated unfracking, since a withdrawal against a public-key reward
+account requires that key's signature.
 
 #### `global_state_cs`
 
@@ -210,7 +236,53 @@ and MUST include a newly minted NFT, under the `registryMintingPolicy`,
 with the programmable token policy as NFT name.
 6) Both the outputs MUST NOT have any reference script.
 7) Both the outputs address MUST **only** have payment credentials.
-8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by a custom `issuanceLogicScript`
+8) The new token `issuanceMintingPolicy` MUST be an instance of the official script parameterized by
+the creator's own minting logic credential and by the protocol parameters policy. This is enforced
+cryptographically rather than by declaration: see below.
+
+#### Registry redeemer and the binding of policy to logic
+
+The `registryMintingPolicy` takes the following redeemer:
+
+```ts
+type RegistryRedeemer {
+    RegistryInit
+    RegistryInsert { key: ByteArray, minting_logic_script: Credential }
+}
+```
+
+- `RegistryInit` initialises the registry with the origin node, once, at bootstrap.
+- `RegistryInsert` registers a new programmable token policy. `key` is the policy being registered
+  and `minting_logic_script` is the credential of the substandard's minting logic.
+
+On insertion the registry enforces three things:
+
+1. The new RegistryNode's `minting_logic_script` datum field MUST equal the credential named in the
+   redeemer, so a registrar cannot declare one credential and write another into the datum.
+2. The official issuance script, parameterized with that credential, MUST hash to `key`. The
+   parameter's hash is derived inside the validator and is not supplied as a redeemer field, so
+   collision resistance of the hash function — not a runtime equality check — is what forces the
+   policy and its minting logic to agree.
+3. The substandard's minting logic MUST be invoked in the registering transaction, i.e. its
+   credential appears in the transaction's withdrawals.
+
+To perform (2) the validator reconstructs the expected policy from a reference input carrying the
+official issuance script's byte layout:
+
+```ts
+type IssuanceCborHex {
+    prefix_cbor_hex: ByteArray,
+    postfix_cbor_hex: ByteArray
+}
+```
+
+The expected policy is the hash of `prefix_cbor_hex` followed by the parameter hash followed by
+`postfix_cbor_hex`, and it MUST equal `key`.
+
+A registration MAY, but need NOT, carry a first mint of the new token in the same transaction.
+Registering with no mint is valid and is the expected shape for real-world-asset issuance and for
+supply-aware substandards that must initialise global state before any token exists. A substandard
+requiring a strict register-then-mint lifecycle MUST enforce that in its own minting logic.
 
 ### Transfer
 
@@ -326,7 +398,7 @@ Then the selected input at `tx.inputs[ai]` is paired with the output at:
 
 **Validation Requirements:**
 - The RegistryNode at `registry_node_idx` MUST exist and contain the token's configuration
-- The token's `third_party_transfer_logic_script` MUST be executed in the transaction (via withdraw-zero)
+- The token's `third_party_logic_script` MUST be executed in the transaction (via withdraw-zero)
 - For each input/output pair:
   - The output MUST have the same address as the input
   - The output MUST have the same datum as the input
@@ -386,7 +458,7 @@ The programmableLogicGlobal stake validator performs the following validation:
 
 4. **Logic Script Execution**: For each registered programmable token:
    - TransferAct: verify the token's `transfer_logic_script` is executed (appears in withdrawals)
-   - ThirdPartyAct: verify the token's `third_party_transfer_logic_script` is executed
+   - ThirdPartyAct: verify the token's `third_party_logic_script` is executed
 
 5. **Output Validation**:
    - TransferAct: Verify that outputs at programmableLogicBase addresses contain at least the expected programmable token value (validated input value + validated mint value). All programmable tokens in outputs MUST remain at programmableLogicBase addresses with valid stake credentials
