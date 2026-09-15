@@ -55,7 +55,6 @@ The term "user" is used to indicate, interchangeably:
 - "script" credentials (smart contracts)
 
 The term "creator" is used to indicate a user that creates a new programmable token.
-The term "admin" is used to indicate a user that can execute privileged actions on a certain programmable token without explicit permission of the users.
 The term "issuer" is used to indicate a user that can mint and/or burn a certain programmable token.
 
 The term "policy" indicates a Cardano Native Token (CNT) policy, which is the hash of the script that can mint such token.
@@ -83,7 +82,7 @@ These components form the common validation infrastructure shared by ALL program
 These components are token-specific and define the custom behavior of each programmable token. They are deployed per token and implement the "substandard":
 
 - `transferLogicScript`: A token-specific Withdraw-0 script that implements the custom transfer logic for user-initiated transfers. This script validates whether a transfer is allowed based on the token's rules (e.g., allowlist checks, transfer limits, compliance rules).
-- `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties could be any Cardano user or specific groups (e.g., admins). This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
+- `thirdPartyTransferLogicScript`: A token-specific Withdraw-0 script that defines third-party actions on the programmable token. Third parties are defined by the token's substandard: the standard places no constraint on who, if anyone, may invoke this script. This enables operations like seizure, forced transfers, auto-compounding, or other custom logic that can be executed without explicit user permission.
 - `issuanceLogicScript`: A token-specific Withdraw-0 script that implements the custom minting/burning logic for the programmable token. It defines who can mint new tokens, under what conditions, and the burning rules.
 - `issuanceMintingPolicy`: The Minting script that mints/burns programmable tokens. While the script code is shared across all programmable tokens, each deployment is token-specific because the policy is parameterized by the hash of the token's specific issuanceLogicScript.
 - `globalState`: An optional token-specific unique UTxO whose datum contains global information regarding the token (e.g., if it's frozen, if transfers are paused, total supply, etc.). Not all tokens require a global state.
@@ -278,7 +277,7 @@ The expected output value at programmableLogicBase addresses is the sum of valid
 #### ThirdPartyAct Constructor
 
 The `ThirdPartyAct` constructor is used when a third party wants to execute actions on programmable tokens
-without the explicit permission of the token owner. Third parties could be any Cardano user or specific groups (e.g., admins). This is commonly used for **seizure operations** but can support any custom logic defined by the token's substandard.
+without the explicit permission of the token owner. Third parties are defined by the token's substandard: the standard places no constraint on who, if anyone, may invoke this script. This is commonly used for **seizure operations** but can support any custom logic defined by the token's substandard.
 
 This constructor supports **multiple UTxOs** in a single transaction for batch operations.
 
@@ -436,7 +435,7 @@ Example implementation: [Minswap CIP-113 DEX](https://minswap-cip113-dev.fluidto
 
 1. **Collateral**: Protocols receive tokens at a smart wallet address they control; `transferLogicScript` validation applies during deposit/withdrawal
 2. **Liquidations**: Liquidation transactions MUST include proper registry proofs
-3. **Substandard Considerations**: Protocols SHOULD verify the substandard before accepting tokens — some (e.g., freeze-and-seize) allow admin actions that could affect collateral
+3. **Substandard Considerations**: Protocols SHOULD verify the substandard before accepting tokens — some (e.g., freeze-and-seize) permit third-party actions that move tokens without the holder's consent, which could affect collateral
 
 #### Yield Aggregators and Vaults
 
@@ -447,7 +446,7 @@ Vaults manage programmable tokens by:
 
 #### Token Management dApps
 
-Token issuers use dedicated dApps for policy creation, minting, and admin operations.
+Token issuers use dedicated dApps for policy creation, minting, and third-party operations.
 
 Example implementation: [CIP-113 Policy Manager](https://cip113-policy-manager-dev.fluidtokens.com/)
 
@@ -467,7 +466,7 @@ Programmable token transactions have additional script execution costs:
 
 #### Security Considerations
 
-1. **Substandard Verification**: Verify the substandard before integration — review `thirdPartyTransferLogicScript` to understand admin capabilities (freeze, seize, etc.)
+1. **Substandard Verification**: Verify the substandard before integration by reviewing its `thirdPartyTransferLogicScript`, answering two independent questions: (a) *what* actions can it authorise without the holder's consent (freeze, seize, forced transfer, rebase, etc.), and (b) *who* can trigger them. A script may be permissioned, permissionless, or restricted to actions that cannot reduce a holder's balance; the standard does not constrain this, so neither question can be answered from CIP-113 alone
 2. **Registry Integrity**: Verify using the canonical registry; monitor for spoofing attempts
 3. **Smart Wallet Security**: Users retain full control via stake credentials; protocols cannot access funds without proper validation
 
@@ -478,7 +477,7 @@ Wallets supporting programmable tokens MUST implement:
 2. **Transaction history** — track transfers in/out of user's smart wallet
 3. **Native transfers** — build TransferAct transactions (optional, nice-to-have)
 
-Admin operations (mint/burn/freeze/seize) are handled by token-specific dApps.
+Issuance and third-party operations (mint/burn/freeze/seize) are handled by token-specific dApps.
 
 #### Address Derivation
 
@@ -604,6 +603,14 @@ Substandards define token-specific behavior (Layer 3 components). Each substanda
 | **Dummy Token** | Simplest possible programmable token — requires a specific redeemer to allow mint/burn/transfer. Useful for developers getting familiar with the prog token stack. | [dummy](https://github.com/cardano-foundation/cip113-programmable-tokens/tree/main/src/substandards/dummy) |
 | **Freeze and Seize** | Simplified stablecoin contract with compliance features (freeze, unfreeze, seize). Useful for testing all prog token capabilities. | [freeze-and-seize](https://github.com/cardano-foundation/cip113-programmable-tokens/tree/main/src/substandards/freeze-and-seize) |
 | **BaFin Standard** | Regulatory-compliant token standard developed by FluidTokens. | [fn-bafin-cardano-sc](https://github.com/FluidTokens/fn-bafin-cardano-sc) |
+
+Where a substandard's `thirdPartyTransferLogicScript` requires signatures from a designated key set — as
+the freeze-and-seize substandard does — that key set is referred to as the substandard's *admin*. This is a
+property of that individual substandard and not of CIP-113: the standard fixes no permissioning for the
+`thirdPartyTransferLogicScript`, which MAY be permissioned, permissionless (e.g., an auto-compounding
+rebase any user can trigger), or restricted to actions that cannot reduce a holder's balance. Integrators
+MUST therefore determine a token's third-party capabilities and its trigger authority from its substandard,
+never from CIP-113 conformance alone.
 
 ## Rationale: how does this CIP achieve its goals?
 The current specification (Version 3.0) is the result of several iterations to create the best standard for programmable tokens.
