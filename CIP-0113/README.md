@@ -229,7 +229,13 @@ register the token has the following requirements:
     - prev_node with the value and the datum unchanged except for the field `next` that is now set to the new token `key`
     - a new RegistryNode representing the new token with the proper RegistryNode datum fields, in particular `next`
     is set to the input value of prev_node `next`
-3) The transaction MUST include the registration certificate of `transfer_logic_script`
+3) Any credential whose Withdraw-0 is invoked MUST already have its reward account registered on
+the ledger, that being a prerequisite for a withdrawal to appear in a transaction at all. This is not
+checked by the registry: it is a ledger requirement, and it applies to the substandard's minting logic
+here because registration invokes it. Note that the Withdraw-0 scripts of this standard permit
+registration of their own credential and refuse every other certificate, so such an account can be
+brought into service but cannot afterwards be deregistered or delegated, and therefore cannot be
+disabled out from under the scripts that depend on it
 4) The new RegistryNode `global_state_cs` MAY be an empty bytestring if the logic of
 the programmable token does not require a global state;
 otherwise it MUST be a bytestring of length 28.
@@ -441,6 +447,36 @@ Instead of requiring each paired output to contain the input value minus seized 
 - **Top-up** (seize + mint): Seize tokens and mint additional ones in the same transaction
 
 The adjusted input for the balance check is computed as: `total_input_policy_tokens + tx.mint_policy_tokens`, filtering out non-positive entries. Authorization for minting/burning is enforced separately by the `issuanceMintingPolicy` validator and the Cardano ledger.
+
+#### UnfrackingAct Constructor
+
+The `UnfrackingAct` action lets a holder restructure the programmableLogicBase UTxOs they already own
+for **one** registered policy, without transferring anything to anyone. Ownership does not change.
+
+The motivating case is a "fracked" UTxO holding several policies at once: a restriction scoped to one
+of them — a freeze, say — immobilises every other token sharing that UTxO. Acting on the restricted
+policy moves its tokens into their own UTxO and leaves everything else spendable.
+
+When using this action, the `unfracking` delegate's `UnfrackingRedeemer` is filled as follows:
+1. `registry_node_idx`: The index (in reference inputs) of the `RegistryNode` for the acted-on policy
+2. `outputs_start_idx`: The index in `tx.outputs` at which the paired continuing outputs begin
+
+**Requirements:**
+- Exactly one policy is acted on per action, named by the RegistryNode at `registry_node_idx`
+- The acted-on policy's `unfracking_logic_script` MUST be invoked via withdraw-zero. Least permission
+  is the default: where that field is an empty public-key credential there is no such script, no
+  transaction can satisfy the requirement, and unfracking is forbidden for that policy. Issuers opt
+  in explicitly, and a token carrying state constrains its own restructuring through this hook
+- The holder MUST authorise the action, by the same rule as a transfer: a signature where the stake
+  credential is a public key, or execution of the script where it is a script
+- Inputs and outputs are paired positionally, as in `ThirdPartyAct`. For each pair, the address, the
+  datum, the reference script and the tokens of **every** policy other than the acted-on one MUST be
+  byte-identical between input and output. Ada may move freely
+- The acted-on policy MUST be stripped **entirely**: present in the input, absent from the continuing
+  output. A partial strip MUST be rejected — a continuing output still holding the acted-on policy
+  would still require that policy's transfer proof on every later spend, which defeats the purpose,
+  and any partial same-owner rebalancing is a transfer, to be validated by that policy's transfer
+  logic rather than through this path
 
 #### RegistryProof Requirements
 
