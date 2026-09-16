@@ -222,8 +222,26 @@ In this case, when creating a transfer transaction a reference input containing 
 To create a new programmable token, it must be properly registered in the registry.
 The on-chain validation won't allow the creator to cheat or deviate from the enforced rules.
 
-Recalling that the registry is an ordered linked list sorted by the `key` field, the transaction to
-register the token has the following requirements:
+Recalling that the registry is an ordered linked list sorted by the `key` field, an insertion splices
+the new node between the node that precedes it and that node's former successor:
+
+```mermaid
+flowchart LR
+    subgraph After["After: NEW spliced in"]
+        direction LR
+        pa["prev_node<br/>key = A<br/><i>next = N</i>"] --> na["NEW<br/>key = N<br/><i>next = Z</i>"] --> ca["next_node<br/>key = Z"]
+    end
+    subgraph Before["Before"]
+        direction LR
+        pb["prev_node<br/>key = A<br/><i>next = Z</i>"] --> cb["next_node<br/>key = Z"]
+    end
+```
+
+`prev_node` is spent and reproduced with its `next` re-pointed at the new key, while the new node
+inherits the value `prev_node.next` used to hold. Both outputs are validated in the same transaction,
+which is what keeps the list sorted and gap-free.
+
+The transaction registering the token has the following requirements:
 1) The RegistryNode preceding the policy of the new token, called here prev_node, MUST be spent
 2) The output of the transaction MUST include:
     - prev_node with the value and the datum unchanged except for the field `next` that is now set to the new token `key`
@@ -343,9 +361,24 @@ type UnfrackingRedeemer {
 
 Validation is delegated along a chain of four links, each of which narrows what the next one may be:
 
+```mermaid
+flowchart LR
+    PLB["programmableLogicBase<br/><i>spend, once per input</i>"]
+    PP[("protocolParameters<br/><i>reference input</i>")]
+    PLG["programmableLogicGlobal<br/><i>dispatcher</i>"]
+    T["transfer<br/><i>delegate</i>"]
+    TP["third_party<br/><i>delegate</i>"]
+    U["unfracking<br/><i>delegate</i>"]
+
+    PLB -- "reads live credential" --> PP
+    PP -- "names" --> PLG
+    PLG -- "TransferAct" --> T
+    PLG -- "ThirdPartyAct" --> TP
+    PLG -- "UnfrackingAct" --> U
 ```
-programmableLogicBase -> protocolParameters -> programmableLogicGlobal -> action delegate
-```
+
+Each link narrows what the next one may be. Only the delegate at the end of the chain validates the
+action; everything before it establishes which delegate is entitled to.
 
 1. `programmableLogicBase` runs once per programmable-token input being spent. It locates the
    protocol parameters UTxO among the reference inputs, reads one field from its datum — the live
@@ -595,6 +628,23 @@ authority it chooses:
 4. Each upgrade transaction MUST declare which of these it is, so that each may be validated as one
    closed rule set.
 
+The handover those requirements describe:
+
+```mermaid
+flowchart LR
+    S1["Authority settled"]
+    N["Nomination standing"]
+    S2["Authority settled<br/><i>nominee is now the authority</i>"]
+
+    S1 -- "NominateAuthority<br/><i>sitting authority</i>" --> N
+    N -- "PromoteAuthority<br/><i>the NOMINEE itself</i>" --> S2
+    N -. "NominateAuthority(None)<br/><i>revoked</i>" .-> S1
+    S1 -- "ProtocolUpgrade<br/><i>wiring only, no handover</i>" --> S1
+```
+
+The self-loop is the common case: ordinary wiring changes that move no authority. Note that the only
+edge which installs a new authority is the one the nominee itself authorises.
+
 **Consequences for integrators.** Because delegate credentials are read live, an integrator holding
 a programmable token cannot assume that the logic which validated a past transfer is the logic that
 will validate the next one. Where that matters, the protocol parameters UTxO — not a cached script
@@ -657,6 +707,37 @@ DeFi protocols constructing transactions with programmable tokens MUST:
 
 Steps 1 and 3 are easy to omit when adapting an existing integration, because neither is visible in
 the token's own configuration: both are properties of the deployment, read at validation time.
+
+The anatomy of a resulting transfer transaction:
+
+```mermaid
+flowchart LR
+    subgraph IN["Inputs"]
+        I1["smart wallet UTxO<br/><i>at programmableLogicBase</i>"]
+    end
+    subgraph WDRL["Withdrawals (amount = 0)"]
+        direction TB
+        W1["programmableLogicGlobal<br/><i>declares TransferAct</i>"]
+        W2["transfer delegate<br/><i>carries proofs</i>"]
+        W3["transferLogicScript<br/><i>the token's own rules</i>"]
+    end
+    subgraph OUT["Outputs"]
+        O1["smart wallet UTxO<br/><i>recipient's stake credential</i>"]
+    end
+    subgraph REF["Reference inputs"]
+        direction TB
+        PP[("protocolParameters")]
+        RN[("registryNode<br/><i>one per policy</i>")]
+    end
+
+    I1 --> O1
+    I1 -. "wdrl_idx" .-> W1
+    I1 -. "params_idx" .-> PP
+    W2 -. "node_idx" .-> RN
+```
+
+The dotted edges are redeemer index hints: each names where the validator should look, and the
+validator then confirms that what it finds is what was claimed.
 
 #### Gas Efficiency
 
