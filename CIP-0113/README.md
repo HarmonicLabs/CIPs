@@ -631,19 +631,19 @@ authority it chooses:
 The handover those requirements describe:
 
 ```mermaid
-stateDiagram-v2
-    Settled: Authority settled
-    Nominated: Nomination standing
+flowchart LR
+    S1["Authority settled"]
+    N["Nomination standing"]
+    S2["Authority settled<br/><i>nominee is now the authority</i>"]
 
-    [*] --> Settled
-    Settled --> Settled: ProtocolUpgrade (wiring only)
-    Settled --> Nominated: NominateAuthority
-    Nominated --> Settled: NominateAuthority(None) — revoked
-    Nominated --> Settled: PromoteAuthority — by the NOMINEE
+    S1 -- "NominateAuthority<br/><i>sitting authority</i>" --> N
+    N -- "PromoteAuthority<br/><i>the NOMINEE itself</i>" --> S2
+    N -. "NominateAuthority(None)<br/><i>revoked</i>" .-> S1
+    S1 -- "ProtocolUpgrade<br/><i>wiring only, no handover</i>" --> S1
 ```
 
-The self-transition on `Settled` is the common case: ordinary wiring changes that move no authority.
-Note that the only edge which installs a new authority is the one the nominee itself authorises.
+The self-loop is the common case: ordinary wiring changes that move no authority. Note that the only
+edge which installs a new authority is the one the nominee itself authorises.
 
 **Consequences for integrators.** Because delegate credentials are read live, an integrator holding
 a programmable token cannot assume that the logic which validated a past transfer is the logic that
